@@ -22,8 +22,10 @@
 # fine-tuning enabling code and other elements of the foregoing made publicly available
 # by Tencent in accordance with TENCENT HUNYUAN COMMUNITY LICENSE AGREEMENT.
 
+import os
 import tempfile
 from typing import Union
+import uuid
 
 import pymeshlab
 import trimesh
@@ -63,33 +65,65 @@ def remove_floater(mesh: pymeshlab.MeshSet):
 
 
 def pymeshlab2trimesh(mesh: pymeshlab.MeshSet):
-    with tempfile.NamedTemporaryFile(suffix='.ply', delete=True) as temp_file:
-        mesh.save_current_mesh(temp_file.name)
-        mesh = trimesh.load(temp_file.name)
-    # 检查加载的对象类型
-    if isinstance(mesh, trimesh.Scene):
-        combined_mesh = trimesh.Trimesh()
-        # 如果是Scene，遍历所有的geometry并合并
-        for geom in mesh.geometry.values():
-            combined_mesh = trimesh.util.concatenate([combined_mesh, geom])
-        mesh = combined_mesh
-    return mesh
+    try:
+        # Create a temporary file
+        temp_file = tempfile.NamedTemporaryFile(suffix='.ply', delete=False)
+        temp_file_name = temp_file.name
+        temp_file.close()  # Close the file to avoid locking issues on Windows
+
+        # Save the current mesh to the temporary file
+        mesh.save_current_mesh(temp_file_name)
+
+        # Load the mesh using trimesh
+        loaded_mesh = trimesh.load(temp_file_name)
+
+        # Check the type of the loaded object
+        if isinstance(loaded_mesh, trimesh.Scene):
+            combined_mesh = trimesh.Trimesh()
+            # If it's a Scene, combine all geometries into a single mesh
+            for geom in loaded_mesh.geometry.values():
+                combined_mesh = trimesh.util.concatenate([combined_mesh, geom])
+            loaded_mesh = combined_mesh
+
+        return loaded_mesh
+
+    finally:
+        # Ensure cleanup of the temporary file
+        if os.path.exists(temp_file_name):
+            os.remove(temp_file_name)
 
 
 def trimesh2pymeshlab(mesh: trimesh.Trimesh):
-    with tempfile.NamedTemporaryFile(suffix='.ply', delete=True) as temp_file:
+    try:
+        # Create a temporary file
+        temp_file = tempfile.NamedTemporaryFile(suffix='.ply', delete=False)
+        temp_file_name = temp_file.name
+        temp_file.close()  # Close to avoid Windows file locking issues
+
+        # Combine geometry if the mesh is a Scene
         if isinstance(mesh, trimesh.scene.Scene):
+            temp_mesh = None
             for idx, obj in enumerate(mesh.geometry.values()):
                 if idx == 0:
                     temp_mesh = obj
                 else:
                     temp_mesh = temp_mesh + obj
             mesh = temp_mesh
-        mesh.export(temp_file.name)
-        mesh = pymeshlab.MeshSet()
-        mesh.load_new_mesh(temp_file.name)
-    return mesh
 
+        # Export the mesh to the temporary file
+        mesh.export(temp_file_name)
+
+        # Load the mesh into pymeshlab
+        mesh_set = pymeshlab.MeshSet()
+        mesh_set.load_new_mesh(temp_file_name)
+
+        return mesh_set
+
+    finally:
+        # Ensure cleanup of the temporary file
+        if os.path.exists(temp_file_name):
+            os.remove(temp_file_name)
+            
 
 def export_mesh(input, output):
     if isinstance(input, pymeshlab.MeshSet):
@@ -144,14 +178,30 @@ class FloaterRemover:
 class DegenerateFaceRemover:
     def __call__(
         self,
-        mesh: Union[pymeshlab.MeshSet, trimesh.Trimesh, Latent2MeshOutput, str],
-    ) -> Union[pymeshlab.MeshSet, trimesh.Trimesh, Latent2MeshOutput]:
+        mesh: Union[pymeshlab.MeshSet, trimesh.Trimesh, "Latent2MeshOutput", str],
+    ) -> Union[pymeshlab.MeshSet, trimesh.Trimesh, "Latent2MeshOutput"]:
+        # Import the mesh to a pymeshlab.MeshSet
         ms = import_mesh(mesh)
 
-        with tempfile.NamedTemporaryFile(suffix='.ply', delete=True) as temp_file:
-            ms.save_current_mesh(temp_file.name)
-            ms = pymeshlab.MeshSet()
-            ms.load_new_mesh(temp_file.name)
+        try:
+            # Create a temporary file
+            temp_file = tempfile.NamedTemporaryFile(suffix='.ply', delete=False)
+            temp_file_name = temp_file.name
+            temp_file.close()  # Close the file to avoid locking issues on Windows
 
-        mesh = export_mesh(mesh, ms)
+            # Save the current mesh to the temporary file
+            ms.save_current_mesh(temp_file_name)
+
+            # Create a new MeshSet and load the mesh back
+            ms = pymeshlab.MeshSet()
+            ms.load_new_mesh(temp_file_name)
+
+            # Convert back to the original mesh type
+            mesh = export_mesh(mesh, ms)
+
+        finally:
+            # Ensure cleanup of the temporary file
+            if os.path.exists(temp_file_name):
+                os.remove(temp_file_name)
+
         return mesh
